@@ -238,24 +238,13 @@ def batch2TrainData(voc, pair_batch):
 
 
 if __name__ == "__main__":
-
-    # min_count : pairs kept : #pairs
-    # 3 : 88.9% : 196772
-    # 4 : 85.5% : 189173
-    # 5 : 82.1% : 181592
-    # 6 : 79.4% : 175622
-    # 7 : 76.9% : 170092
-    # 8 : 74.6% : 165050
-
     # load_pairs_trim_and_save(min_count=4)
-
 
     # Load vocabulary and pairs
     min_count = 4
     data = torch.load('data/pairs_voc_trimmed_min{}_pairs.pt'.format(min_count))
     pairs = data['pairs']
     voc = data['vocab']
-
 
     # Example for validation
     small_batch_size = 5
