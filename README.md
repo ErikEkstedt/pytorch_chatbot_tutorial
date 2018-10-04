@@ -40,7 +40,7 @@ the list of training pairs and the corresponding vocabulary.
 
 
 The number of pairs left after trim.
-```bash
+```
 min_count |  kept   |  #pairs  |
 ----------|---------|----------|
 3         |  88.9%  |  196772  |
