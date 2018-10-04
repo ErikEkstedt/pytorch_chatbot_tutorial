@@ -1,23 +1,10 @@
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 import random
-import re
-import os
-import unicodedata
-import codecs
 from io import open
 import itertools
-import math
-import copy
 
 import torch
-from torch.jit import script, trace
-import torch.nn as nn
-from torch import optim
-import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+from torch.nn.utils.rnn import pad_sequence
 
 
 # Vocabulary
@@ -75,115 +62,7 @@ class Voc:
             self.addWord(word)
 
 
-def get_pairs(datafile, delimiter='\t', max_length=None):
-    ''' Read query/response pairs and return a voc object '''
-
-    def filterPairs(pairs, max_length=10):
-        ''' Filter pairs using filterPair condition '''
-        def filterPair(p):
-            return len(p[0].split(' ')) < max_length and len(p[1].split(' ')) < max_length
-        return [pair for pair in pairs if filterPair(pair)]
-
-    def normalizeString(s):
-        ''' Lowercase, trim, and remove non-letter characters'''
-        def unicodeToAscii(s):
-            ''' Turn a Unicode string to plain ASCII, thanks to
-            http://stackoverflow.com/a/518232/2809427'''
-            return ''.join(
-                c for c in unicodedata.normalize('NFD', s)
-                if unicodedata.category(c) != 'Mn'
-            )
-        s = unicodeToAscii(s.lower().strip())
-        s = re.sub(r"([.!?])", r" \1", s)
-        s = re.sub(r"[^a-zA-Z.!?]+", r" ", s)
-        s = re.sub(r"\s+", r" ", s).strip()
-        return s
-
-    print("Reading from {} and extracting dialog pairs...".format(datafile))
-    lines = open(datafile, encoding='utf-8').read().strip().split('\n')
-    # Split every line into pairs and normalize
-    pairs = [[normalizeString(s) for s in l.split(delimiter)] for l in lines]
-
-    if max_length is not None:
-        print('Filter data by max sentence lengths...')
-        pairs = filterPairs(pairs, max_length)
-        print("Trimmed to {!s} sentence pairs".format(len(pairs)))
-
-    return pairs
-
-
-def trim_rare_words(voc, pairs, MIN_COUNT):
-    '''Trim words used under the MIN_COUNT from the voc'''
-    voc.trim(MIN_COUNT)
-    # Filter out pairs with trimmed words
-    keep_pairs = []
-    for pair in pairs:
-        input_sentence = pair[0]
-        output_sentence = pair[1]
-        keep_input = True
-        keep_output = True
-        # Check input sentence
-        for word in input_sentence.split(' '):
-            if word not in voc.word2index:
-                keep_input = False
-                break
-        # Check output sentence
-        for word in output_sentence.split(' '):
-            if word not in voc.word2index:
-                keep_output = False
-                break
-
-        # Only keep pairs that do not contain trimmed word(s) in their input or output sentence
-        if keep_input and keep_output:
-            keep_pairs.append(pair)
-
-    print("Trimmed from {} pairs to {}, {:.1f}% of total".format(len(pairs),
-                                                                len(keep_pairs),
-                                                                100*len(keep_pairs) / len(pairs)))
-    return keep_pairs
-
-
-def load_pairs_trim_and_save(min_count=4):
-    '''
-    Argument:
-        min_count: int, Trhow out words used less than `min_count`
-
-    min_count   : kept      : #pairs
-    --------------------------------
-    3           : 88.9%     : 196772
-    4           : 85.5%     : 189173
-    5           : 82.1%     : 181592
-    6           : 79.4%     : 175622
-    7           : 76.9%     : 170092
-    8           : 74.6%     : 165050
-    '''
-    datafile = 'data/lines_of_pairs_movie_lines.txt'  # where to load data from
-    corpus_name = "cornell movie-dialogs corpus"
-    max_length = None  # if none all sentences are used.
-
-    orig_pairs = get_pairs(datafile=datafile,
-                           max_length=max_length)
-    print("Read {!s} sentence pairs".format(len(orig_pairs)))
-
-    pairs = copy.deepcopy(orig_pairs)
-    voc = Voc(corpus_name)
-    print("Adding words to Vocab...")
-    for pair in pairs:
-        voc.addSentence(pair[0])
-        voc.addSentence(pair[1])
-    # Load data and create vocabulary
-    pairs = trim_rare_words(voc, pairs, min_count)  # Trim voc and pairs
-
-
-    filename = 'data/pairs_voc_trimmed_min{}_pairs.pt'.format(min_count)
-    torch.save({'pairs':pairs, 'vocab':voc},filename)
-    print('saving vocab and pairs as: ', filename)
-
-
-# Dataset
-# -----------------------------------------------------------------------------
-
-# Batch magic and Tensor force
+# Batch magic and Tensor force_----------------------------------
 def indexesFromSentence(voc, sentence, EOS_token=2):
     return [voc.word2index[word] for word in sentence.split(' ')] + [EOS_token]
 
@@ -212,7 +91,6 @@ def inputVar(l, voc):
     padVar = torch.LongTensor(padList)
     return padVar, lengths
 
-
 # Returns padded target sequence tensor, padding mask, and max target length
 def outputVar(l, voc):
     indexes_batch = [indexesFromSentence(voc, sentence) for sentence in l]
@@ -236,23 +114,125 @@ def batch2TrainData(voc, pair_batch):
     return inp, lengths, output, mask, max_target_len
 
 
+# Dataset
+# -----------------------------------------------------------------------------
+
+class TorchDataset(Dataset):
+    def __init__(self, pairs, vocab, pad_idx=0):
+        self.pairs = pairs
+        self.vocab = vocab
+        self.pad_token = torch.LongTensor([pad_idx])
+
+    def __len__(self):
+        return len(pairs)
+
+    def decode(self, data):
+        if isinstance(data, torch.Tensor):
+            data = [x.item() for x in data]
+        sentence = []
+        for word_idx in data:
+            sentence.append(self.vocab.index2word[word_idx])
+        return sentence
+
+    def indexesFromSentence(self, sentence):
+        return [self.vocab.word2index[word] for word in sentence.split(' ')]
+
+    def __getitem__(self, idx):
+        pair = pairs[idx]
+
+        # Torchify words -> idx -> tensors
+        context = self.indexesFromSentence(pair[0])
+        response = self.indexesFromSentence(pair[1])
+        context = torch.LongTensor(context)
+        response = torch.LongTensor(response)
+        return context, response
+
+
+def collate_fn(data):
+    '''
+    Arguments:
+        data:  list of tensors (context, response)
+    '''
+    # The data should be sorted by length.
+    # Sort by length of contexts
+    data.sort(key=lambda x: len(x[0]), reverse=True)
+
+    # seperate source and target sequences.
+    context_batch, response_batch = zip(*data)  # returns tuples
+
+    # Context
+    context_lengths = [len(d) for d in context_batch]
+    context_padded = pad_sequence(list(context_batch), batch_first=True)
+
+    # Alternative 1
+    # sort in order to pad. keep original index and permutate back.
+    # make list of tuples: (original_index, length, tensor)
+
+    # response_info = [(i, len(d), d) for i, d in enumerate(response_batch)]
+    # response_info.sort(key=lambda x: x[1], reverse=True)
+    # idx, response_lengths, responses = respone_infor
+    # response_padded = pad_sequence(list(responses), batch_first=True)
+    # print('response_padded: ', response_padded.shape)
+    # TODO:
+    # permutate rows to original order. Matching responses with correct contexts
+
+    # Alternative 2
+    # use preexisting code: 
+    response_lengths = [len(d) for d in response_batch]
+    response_np = [x.numpy() for x in response_batch]
+    response_padded_list = zeroPadding(response_np)
+    response_padded = torch.LongTensor(response_padded_list)
+
+    # I like to return dict such that the names and meaning of the data is shown
+    # in the training loop.
+    context = {'context_padded': context_padded,
+               'context_lengths': context_lengths}
+    response = {'response_padded': response_padded,
+                'response_lengths': response_lengths}
+
+    return context, response
 
 if __name__ == "__main__":
     # load_pairs_trim_and_save(min_count=4)
 
+    # data_maxlen_None_trim_3_pairs_196772.pt
+    # data_maxlen_None_trim_4_pairs_189173.pt
+    # data_maxlen_None_trim_8_pairs_165050.pt
+
     # Load vocabulary and pairs
-    min_count = 4
-    data = torch.load('data/pairs_voc_trimmed_min{}_pairs.pt'.format(min_count))
+    data = torch.load('data/data_maxlen_None_trim_8_pairs_165050.pt')
+
     pairs = data['pairs']
-    voc = data['vocab']
+    vocab_dict = data['vocab_dict']
+    vocab = Voc('')
+    vocab.__dict__ = vocab_dict
+
+    dset = TorchDataset(pairs, vocab)
+    context, response = dset[0]
+    print(dset.decode(context))
+    print(dset.decode(response))
+
+    dloader = DataLoader(dset, batch_size=16, collate_fn=collate_fn)
+    for context, response in dloader:
+        inputs = context['context_padded']
+        inputs_length = context['context_lengths']
+        outputs = response['response_padded']
+        outputs_length = response['response_lengths']
+        print('context ({}): {}'.format(inputs.dtype, inputs.shape))
+        print('response ({}): {}'.format(inputs.dtype, inputs.shape))
+        break
+
+
 
     # Example for validation
     small_batch_size = 5
     batches = batch2TrainData(voc, [random.choice(pairs) for _ in range(small_batch_size)])
     input_variable, lengths, target_variable, mask, max_target_len = batches
-
     print("input_variable: ", input_variable.shape)
     print("lengths: ", lengths)
     print("target_variable:", target_variable.shape)
     print("mask:", mask.shape)
     print("max_target_len:", max_target_len)
+
+
+

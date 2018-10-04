@@ -1,0 +1,75 @@
+# Custom
+
+# tex
+*.bak
+*.swp
+*.aux
+*.log
+*.lof
+*.fls
+*.fdb_latexmk
+*.nav
+*.out
+*.snm
+*.toc
+*.bcf
+*.run.xml
+*.synctex.gz
+*.blg
+*.bbl
+
+# python
+*.pyc
+*.pyo
+__pycache__
+
+# Compiled source #
+###################
+*.com
+*.class
+*.dll
+*.exe
+*.o
+*.so
+
+# Temporary files #
+###################
+*.swp
+*.swo
+*~
+*#
+
+# Packages #
+############
+*.7z
+*.dmg
+*.gz
+*.iso
+*.jar
+*.rar
+*.tar
+*.zip
+
+*.egg-info/
+
+# Libreoffice #
+###############
+*.ods.cpgz
+
+# Logs and databases #
+######################
+*.log
+*.sql
+*.sqlite
+
+# OS generated files #
+######################
+.DS_Store*
+ehthumbs.db
+Icon?
+Thumbs.db
+
+# npm
+node_modules/*
+# Messes up fzf search
+
